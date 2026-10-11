@@ -1489,6 +1489,16 @@ fn effective_home_dir() -> Option<PathBuf> {
     dirs::home_dir()
 }
 
+/// The app home directory (`~/.deepseek`).
+///
+/// Every per-user file this client owns lives under it, so integrations that
+/// need their own subtree should resolve it here rather than re-deriving the
+/// home directory.
+#[must_use]
+pub fn app_home_dir() -> Option<PathBuf> {
+    effective_home_dir().map(|home| home.join(".deepseek"))
+}
+
 fn home_config_path() -> Option<PathBuf> {
     effective_home_dir().map(|home| home.join(".deepseek").join("config.toml"))
 }

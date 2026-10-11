@@ -33,6 +33,7 @@ mod execpolicy;
 mod features;
 mod handoff;
 mod hooks;
+mod integrations;
 mod llm_client;
 mod localization;
 mod logging;
@@ -215,6 +216,11 @@ enum Commands {
     Mcp {
         #[command(subcommand)]
         command: McpCommand,
+    },
+    /// Connect external agent harnesses (DeepSeek Harness `dsh`) to this client
+    Integrations {
+        #[command(subcommand)]
+        command: IntegrationsCommand,
     },
     /// Execpolicy tooling
     Execpolicy(ExecpolicyCommand),
@@ -402,6 +408,83 @@ struct ServeArgs {
     /// `[runtime_api] cors_origins` from `config.toml`. Whalescale#255.
     #[arg(long = "cors-origin", value_name = "URL")]
     cors_origin: Vec<String>,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum IntegrationsCommand {
+    /// Connect an installed DeepSeek Harness (`dsh`) to this client
+    Dsh {
+        #[command(subcommand)]
+        command: DshCommand,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum DshCommand {
+    /// Show whether dsh is installed, what this client would pin, and the state
+    Status {
+        /// Machine-readable report
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Print exactly what `connect` would write, without writing it
+    Plan {
+        #[arg(long, default_value = "web")]
+        profile: String,
+        /// Mirror a full-access posture into DSH (never the default)
+        #[arg(long, default_value_t = false)]
+        allow_full_access: bool,
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Write the `--patch` overlay and receipt
+    Connect {
+        #[arg(long, default_value = "web")]
+        profile: String,
+        #[arg(long, default_value_t = false)]
+        allow_full_access: bool,
+        /// Skip the interactive confirmation (required when stdin is not a terminal)
+        #[arg(long, default_value_t = false)]
+        yes: bool,
+    },
+    /// Re-derive the overlay from the current route
+    Update {
+        #[arg(long)]
+        profile: Option<String>,
+        #[arg(long, default_value_t = false)]
+        allow_full_access: bool,
+        #[arg(long, default_value_t = false)]
+        yes: bool,
+    },
+    /// Print the overlay that would be written, without writing it
+    Overlay {
+        #[arg(long, default_value = "web")]
+        profile: String,
+        #[arg(long, default_value_t = false)]
+        allow_full_access: bool,
+    },
+    /// Launch the installed dsh with the overlay applied
+    Launch {
+        #[arg(long)]
+        profile: Option<String>,
+        /// Print the exact command instead of running it
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+        /// Arguments for the dsh app itself, after `--`
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Keep the overlay but refuse launches
+    Disable,
+    /// Allow launches again
+    Enable,
+    /// Delete the overlay and receipt this client wrote
+    Remove {
+        #[arg(long, default_value_t = false)]
+        yes: bool,
+    },
+    /// Describe this command surface
+    Help,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -670,6 +753,13 @@ async fn main() -> Result<()> {
             Commands::Mcp { command } => {
                 let config = load_config_from_cli(&cli)?;
                 run_mcp_command(&config, command).await
+            }
+            Commands::Integrations { command } => {
+                let config = load_config_from_cli(&cli)?;
+                let workspace = cli.workspace.clone().unwrap_or_else(|| {
+                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+                });
+                run_integrations_command(&config, &workspace, command)
             }
             Commands::Execpolicy(command) => {
                 let config = load_config_from_cli(&cli)?;
@@ -2848,6 +2938,72 @@ fn read_patch_from_stdin() -> Result<String> {
     let mut buffer = String::new();
     stdin.read_to_string(&mut buffer)?;
     Ok(buffer)
+}
+
+/// `deepseek integrations …` — external harness connections.
+fn run_integrations_command(
+    config: &Config,
+    workspace: &Path,
+    command: IntegrationsCommand,
+) -> Result<()> {
+    match command {
+        IntegrationsCommand::Dsh { command } => {
+            let command = match command {
+                DshCommand::Status { json } => integrations::cli::DshCommand::Status { json },
+                DshCommand::Plan {
+                    profile,
+                    allow_full_access,
+                    json,
+                } => integrations::cli::DshCommand::Plan {
+                    profile,
+                    allow_full_access,
+                    json,
+                },
+                DshCommand::Connect {
+                    profile,
+                    allow_full_access,
+                    yes,
+                } => integrations::cli::DshCommand::Connect {
+                    profile,
+                    allow_full_access,
+                    yes,
+                },
+                DshCommand::Update {
+                    profile,
+                    allow_full_access,
+                    yes,
+                } => integrations::cli::DshCommand::Update {
+                    profile,
+                    allow_full_access,
+                    yes,
+                },
+                DshCommand::Overlay {
+                    profile,
+                    allow_full_access,
+                } => integrations::cli::DshCommand::Overlay {
+                    profile,
+                    allow_full_access,
+                },
+                DshCommand::Launch {
+                    profile,
+                    dry_run,
+                    args,
+                } => integrations::cli::DshCommand::Launch {
+                    profile,
+                    dry_run,
+                    app_args: args,
+                },
+                DshCommand::Disable => integrations::cli::DshCommand::Disable,
+                DshCommand::Enable => integrations::cli::DshCommand::Enable,
+                DshCommand::Remove { yes } => integrations::cli::DshCommand::Remove { yes },
+                DshCommand::Help => {
+                    print!("{}", integrations::cli::help());
+                    return Ok(());
+                }
+            };
+            integrations::cli::run(config, workspace, command)
+        }
+    }
 }
 
 async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {

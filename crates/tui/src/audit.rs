@@ -13,20 +13,30 @@ use crate::utils::{flush_and_sync, open_append};
 /// This helper is best-effort by design: callers should not fail critical flows
 /// if audit persistence fails.
 pub fn log_sensitive_event(event: &str, details: Value) {
-    if let Err(err) = append_event(event, details) {
+    match default_audit_path() {
+        Ok(path) => log_sensitive_event_in(&path, event, details),
+        Err(err) => crate::logging::warn(format!("audit log write failed: {err}")),
+    }
+}
+
+/// Append an audit event to an explicit path.
+///
+/// Used where an integration owns its own audit home, and by tests so a run
+/// never appends to the user's real `audit.log`.
+pub fn log_sensitive_event_in(path: &std::path::Path, event: &str, details: Value) {
+    if let Err(err) = append_event(path, event, details) {
         crate::logging::warn(format!("audit log write failed: {err}"));
     }
 }
 
-fn append_event(event: &str, details: Value) -> anyhow::Result<()> {
-    let path = default_audit_path()?;
+fn append_event(path: &std::path::Path, event: &str, details: Value) -> anyhow::Result<()> {
     let parent = path.parent().map(|p| p.to_path_buf());
     if let Some(ref parent) = parent {
         fs::create_dir_all(parent)?;
     }
     // Open for append with a BufWriter for buffered I/O, then flush + fsync
     // after each event so the record is durably on disk.
-    let mut writer = open_append(&path)?;
+    let mut writer = open_append(path)?;
     let record = json!({
         "ts": Utc::now().to_rfc3339(),
         "event": event,
